@@ -29,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalUriHandler
@@ -106,6 +107,7 @@ import io.music_assistant.client.ui.compose.search.GlobalSearchRequest
 import io.music_assistant.client.ui.compose.search.SearchScreen
 import io.music_assistant.client.ui.compose.search.SearchScreenState
 import io.music_assistant.client.ui.compose.search.SearchViewModel
+import io.music_assistant.client.ui.utils.WindowClass
 import io.music_assistant.client.utils.DataConnectionState
 import io.music_assistant.client.utils.SessionState
 import kotlinx.coroutines.flow.collectLatest
@@ -300,6 +302,16 @@ fun MainNavigationRoot(
         }
     }
 
+    val sidebarNavigation = WindowClass.isWide()
+    var skipNextTransition by remember { mutableStateOf(false) }
+    LaunchedEffect(skipNextTransition) {
+        if (skipNextTransition) {
+            // AnimatedContent reads the spec while composing the new scene, one frame later.
+            repeat(2) { withFrameNanos { } }
+            skipNextTransition = false
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         val libraryCategories by libraryCategoriesViewModel.state.collectAsStateWithLifecycle()
         val navigationItems = navigationItems(
@@ -314,8 +326,16 @@ fun MainNavigationRoot(
                     else -> category.mediaType?.let { MainNav.LibraryList(it) }
                 }
 
-                if (toAdd != null) {
-                    multiBackStack.add(toAdd)
+                when {
+                    toAdd == null -> Unit
+                    !sidebarNavigation -> multiBackStack.add(toAdd)
+                    backStacks[multiBackStack.currentBackStack].lastOrNull() != toAdd -> {
+                        // The sidebar stays visible, so its categories are siblings: picking one
+                        // replaces the open category in place rather than pushing on top of it.
+                        multiBackStack.resetCurrentBackStack()
+                        multiBackStack.add(toAdd)
+                        skipNextTransition = true
+                    }
                 }
             },
             goToSettings = goToSettings,
@@ -422,10 +442,12 @@ fun MainNavigationRoot(
                         ),
                         transitionSpec = tabAwareTransitionSpec(
                             tabRootKeys,
+                            { skipNextTransition },
                             defaultTransitionSpec(),
                         ),
                         popTransitionSpec = tabAwareTransitionSpec(
                             tabRootKeys,
+                            { skipNextTransition },
                             defaultPopTransitionSpec(),
                         ),
                         onBack = {
@@ -498,16 +520,18 @@ private fun navigationItems(
 }
 
 /**
- * Switches tabs without animation and uses [inTab] inside one tab. A tab switch is not a push or a
+ * Switches tabs, and [skip]ped changes, without animation and uses [inTab] inside one tab. A tab switch is not a push or a
  * pop, and a quick tab tap that interrupts a slide can leave NavDisplay on a half-drawn scene.
  */
 private fun tabAwareTransitionSpec(
     tabRootKeys: List<Any>,
+    skip: () -> Boolean,
     inTab: AnimatedContentTransitionScope<Scene<NavKey>>.() -> ContentTransform,
 ): AnimatedContentTransitionScope<Scene<NavKey>>.() -> ContentTransform = {
-    when (initialState.tabIndex(tabRootKeys)) {
-        targetState.tabIndex(tabRootKeys) -> inTab()
-        else -> EnterTransition.None togetherWith ExitTransition.None
+    if (!skip() && initialState.tabIndex(tabRootKeys) == targetState.tabIndex(tabRootKeys)) {
+        inTab()
+    } else {
+        EnterTransition.None togetherWith ExitTransition.None
     }
 }
 
